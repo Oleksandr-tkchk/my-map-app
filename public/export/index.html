@@ -13,6 +13,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <!-- LZ-String (srcz) -->
   <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
   <style>
     :root { --w: 1080px; }
@@ -606,6 +607,81 @@ function normalizePoints(raw){
   if (Array.isArray(raw)){ const out=[]; for (const item of raw){ const pt=toLonLat(item); if (pt && Number.isFinite(pt[0]) && Number.isFinite(pt[1])) out.push(pt); } return out.length?out:null; }
   return null;
 }
+  /* ===== ZIP helpers ===== */
+function downloadBlob(blob, filename){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+// Безпечні і короткі імена файлів
+function safeName(s, max = 120){
+  return String(s || '')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+}
+
+/* 
+ * Експорт: кожен маршрут окремим JSON у ZIP
+ * rows — ті самі рядки, які ти віддавав у exportJsonFromRows
+ */
+async function exportJsonZipFromRows(rows){
+  if (!rows || !rows.length){
+    alert('Немає рядків для експорту.');
+    return;
+  }
+
+  const zip = new JSZip();
+  const folder = zip.folder('routes');
+
+  // індекс: для зручного перегляду складу архіву
+  const index = [];
+
+  // Назва архіву
+  const ts = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const zipName = `routes_${ts.getFullYear()}${pad(ts.getMonth()+1)}${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}.zip`;
+
+  // Наповнюємо ZIP файлами
+  let i = 0;
+  for (const r of rows){
+    const raw = r.raw || {};
+    const jsonObj = Object.assign({ id: r.id }, normalizeForJson(raw));
+    const pretty = `${r.fromName || ''} → ${r.toName || ''}`.trim();
+    const base =
+      safeName(
+        `route_${r.routeKey ? r.routeKey + '_' : ''}${r.id || ''}_${pretty || ''}`
+      ) || `route_${i+1}`;
+
+    folder.file(`${base}.json`, JSON.stringify(jsonObj, null, 2));
+    index.push({
+      id: r.id,
+      routeKey: r.routeKey || null,
+      name: pretty || null,
+      updatedAt: r.updatedAtRaw || null,
+      distance_km: Number.isFinite(r.distance_km) ? r.distance_km : null
+    });
+
+    // щоб не "заморожувати" UI на дуже великих вибірках
+    if (++i % 200 === 0) await new Promise(requestAnimationFrame);
+  }
+
+  // докладаємо індекс
+  zip.file('index.json', JSON.stringify(index, null, 2));
+
+  // Генеруємо архів з компресією
+  const blob = await zip.generateAsync(
+    { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
+    (meta) => { try { statusEl.textContent = `Архівується… ${meta.percent.toFixed(1)}%`; } catch(_) {} }
+  );
+
+  downloadBlob(blob, zipName);
+  try { statusEl.textContent = 'Готово'; } catch(_) {}
+}
 
 /* === UTF-8 Base64 === */
 function b64encodeUtf8(objOrString){
@@ -988,7 +1064,7 @@ async function exportJsonFromRows(rows){
   // rows — це рядки таблиці з полем raw (повні дані документа)
   const data = rows.map(r => {
     const full = r.raw ? r.raw : {};        // на всяк випадок
-    const normalized = normalizeForJson(full);
+    const normalized = (full);
     // гарантуємо наявність id у кожному записі
     return Object.assign({ id: r.id }, normalized);
   });
@@ -1347,7 +1423,7 @@ btnExportJson.addEventListener('click', async ()=>{
     let rows = applyTopFilters(allRows);
     rows = applyTableFilters(rows);
     rows = sortRows(rows);
-    await exportJsonFromRows(rows);      // ⇦ нова функція нижче
+    await exportJsonZipFromRows(rows);        // <-- замість exportJsonFromRows
   }catch(e){ handleFirestoreError(e); }
   finally{ setBusy(false); }
 });
@@ -1360,7 +1436,7 @@ btnExportJsonAll.addEventListener('click', async ()=>{
     let rows = applyTopFilters(allRows);
     rows = applyTableFilters(rows);
     rows = sortRows(rows);
-    await exportJsonFromRows(rows);
+    await exportJsonZipFromRows(rows);        // <-- замість exportJsonFromRows
   }catch(e){ handleFirestoreError(e); }
   finally{ setBusy(false); }
 });
