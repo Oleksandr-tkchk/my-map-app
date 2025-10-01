@@ -1386,12 +1386,34 @@ fileInput.onchange = (event) => {
   const reader = new FileReader();
   reader.onload = (e) => {
     try {
-      const routeData = JSON.parse(e.target.result);
-      const arrFrom = (pts) => {
-        if (!Array.isArray(pts)) return [];
-        if (pts.length && typeof pts[0] === 'object' && pts[0] !== null && 'lng' in pts[0]) { return fromObjPoints(pts); }
-        return pts;
-      };
+      const raw = JSON.parse(e.target.result);
+
+// 1) Підтримка і об'єкта, і масиву об'єктів
+let routeData = Array.isArray(raw) ? raw[0] : raw;
+if (Array.isArray(raw) && raw.length > 1) {
+  console.warn('У файлі кілька маршрутів, завантажую перший із', raw.length);
+  alert(`У файлі ${raw.length} маршрут(и/ів). Завантажую перший.`);
+}
+if (!routeData || typeof routeData !== 'object') {
+  alert('Файл має невірний формат'); return;
+}
+
+// 2) Перетворення points у [lng, lat], підстраховуємося по різних варіантах
+const arrFrom = (pts) => {
+  if (!Array.isArray(pts)) return [];
+  // [ [lng,lat], ... ]
+  if (pts.length && Array.isArray(pts[0])) {
+    return pts
+      .map(p => [Number(p[0]), Number(p[1])])
+      .filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+  }
+  // [ {lng,lat}, ... ]
+  if (pts.length && typeof pts[0] === 'object') {
+    return fromObjPoints(pts)
+      .filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+  }
+  return [];
+};
 
       points = arrFrom(routeData.points || []);
       startRuler = arrFrom(routeData.startRuler || []);
