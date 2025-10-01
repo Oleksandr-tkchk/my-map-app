@@ -250,6 +250,8 @@
         <button id="btnPreview" class="btn" disabled>👁️ Попередній перегляд</button>
         <button id="btnExport" class="btn primary" disabled>📥 Експорт у Excel</button>
         <button id="btnRefresh" class="btn" disabled>🔄 Оновити базу</button>
+		<button id="btnExportJson" class="btn">JSON (видимі)</button>
+		<button id="btnExportJsonAll" class="btn ghost" title="Довантажить усі сторінки і збереже в JSON">JSON (усі сторінки)</button>
         <span class="muted">Порожні фільтри = не обмежувати. Якщо Firestore попросить індекс — створіть, за посиланням із консолі.</span>
       </div>
       <datalist id="directoryList"></datalist>
@@ -287,6 +289,8 @@
             <col class="col-key"> <!-- Код маршруту -->
             <col class="col-id">  <!-- ID -->
             <col><col>        <!-- Карта, Навігатор -->
+			<!-- додай ще один col наприкінці -->
+			<col>
           </colgroup>
           <thead>
             <tr>
@@ -305,6 +309,7 @@
               <th class="sortable" data-sort="id">ID <span class="s">↕</span></th>
               <th>Карта</th>
               <th>Навігатор</th>
+			  <th>JSON</th>
             </tr>
             <!-- Рядок фільтрів -->
             <tr class="filters">
@@ -314,6 +319,7 @@
               <th><input id="f_toName" type="text" placeholder="пошук…" list="directoryList"></th>
               <th><input id="f_via" type="text" placeholder="проміжні…"></th>
               <th>
+			  <th></th>
                 <div class="range">
                   <input id="f_distMin" type="number" step="0.001" placeholder="мін.">
                   <input id="f_distMax" type="number" step="0.001" placeholder="макс.">
@@ -407,11 +413,15 @@ const btnMore    = document.getElementById('btnMore');
 const btnAll     = document.getElementById('btnAll');
 const btnClearFilters = document.getElementById('btnClearFilters');
 const btnAutosize = document.getElementById('btnAutosize');
+const btnExportJson     = document.getElementById('btnExportJson');
+const btnExportJsonAll  = document.getElementById('btnExportJsonAll');
 
 function setBusy(b){
   btnPreview.disabled = b || !currentUser;
   btnExport.disabled  = b || !currentUser;
   btnRefresh.disabled = b || !currentUser;
+  btnExportJson.disabled    = b || !currentUser;
+btnExportJsonAll.disabled = b || !currentUser;
   if (btnMore) btnMore.disabled = b;
   if (btnAll)  btnAll.disabled  = b;
   if (btnClearFilters) btnClearFilters.disabled = b;
@@ -557,6 +567,28 @@ function unitByCode(code){ return (dirByCode[code]?.unit)||''; }
 function dayStartISO(d){ const x=new Date(d); x.setHours(0,0,0,0); return x.toISOString(); }
 function dayEndISO(d){ const x=new Date(d); x.setHours(23,59,59,999); return x.toISOString(); }
 function formatDate(dt){ if (!dt) return ''; const d=new Date(dt); if (isNaN(d)) return ''; const pad=n=>String(n).padStart(2,'0'); return `${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+function normalizeForJson(val){
+  if (val === undefined || val === null) return null;
+
+  // Firestore спеціальні типи
+  if (val instanceof firebase.firestore.Timestamp) return val.toDate().toISOString();
+  if (val instanceof firebase.firestore.GeoPoint)  return { lat: val.latitude, lng: val.longitude };
+  // DocumentReference → шлях
+  if (val && typeof val === 'object' && typeof val.path === 'string' && val.parent) return val.path;
+
+  if (Array.isArray(val)) return val.map(normalizeForJson);
+  if (typeof val === 'object'){
+    const out = {}; for (const [k,v] of Object.entries(val)) out[k] = normalizeForJson(v); return out;
+  }
+  return val;
+}
+
+function downloadJson(objOrArray, filename){
+  const blob = new Blob([JSON.stringify(objOrArray, null, 2)], { type:'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+  setTimeout(()=> URL.revokeObjectURL(a.href), 5000);
+}
 const toNum = v => (v==='' || v==null) ? NaN : Number(v);
 
 /* --- нормалізація точок --- */
@@ -735,6 +767,7 @@ function parseSnap(snap){
       statusRaw, statusLabel, rejectComment,
       updatedAtRaw: d.updatedAt || null,
       updatedAt: formatDate(d.updatedAt)
+	  raw: d
     });
   });
   const lastDoc = snap.docs[snap.docs.length-1] || null;
@@ -951,6 +984,20 @@ async function shareURL(url, title){
   catch { prompt('Скопіюйте посилання вручну:', url); }
 }
 
+async function exportJsonFromRows(rows){
+  // rows — це рядки таблиці з полем raw (повні дані документа)
+  const data = rows.map(r => {
+    const full = r.raw ? r.raw : {};        // на всяк випадок
+    const normalized = normalizeForJson(full);
+    // гарантуємо наявність id у кожному записі
+    return Object.assign({ id: r.id }, normalized);
+  });
+
+  const ts = new Date(); const pad = n=>String(n).padStart(2,'0');
+  const fname = `routes_${ts.getFullYear()}${pad(ts.getMonth()+1)}${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}.json`;
+  downloadJson(data, fname);
+}
+
 /* ---------- Таблиця ---------- */
 function renderTable(rows){
   const tb = document.querySelector('#resTable tbody');
@@ -976,6 +1023,7 @@ function renderTable(rows){
     </td>
     <td><a href="${MAP_URL}?rid=${encodeURIComponent(r.id)}" target="_blank" rel="noopener">Відкрити</a></td>
     <td><button class="btn sm share-btn" data-id="${r.id}" data-name="${(r.fromName||'') + ' → ' + (r.toName||'')}">🔗 Поділитися</button></td>
+	<td><button class="btn sm json-one" data-id="${r.id}">JSON</button></td>
   </tr>`).join('');
   document.getElementById('countInfo').textContent = `Записів (після фільтру): ${rows.length}`;
   updateStats(rows);
@@ -1136,6 +1184,26 @@ document.querySelector('#resTable tbody').addEventListener('click', async (ev)=>
     return;
   }
 
+const jsonOne = ev.target.closest('.json-one');
+if (jsonOne){
+  const id = jsonOne.getAttribute('data-id');
+  try{
+    setBusy(true);
+    // знаходимо рядок у вже завантажених
+    const row = allRows.find(x => x.id === id);
+    if (row && row.raw){
+      downloadJson(Object.assign({ id }, normalizeForJson(row.raw)), `route_${id}.json`);
+    } else {
+      // фолбек: дочитати документ напряму
+      const doc = await db.collection('routes').doc(id).get({ source:'server' });
+      const raw = doc.exists ? doc.data() : {};
+      downloadJson(Object.assign({ id }, normalizeForJson(raw)), `route_${id}.json`);
+    }
+  }catch(e){ alert('Не вдалося вивантажити маршрут: ' + (e?.message || e)); }
+  finally{ setBusy(false); }
+  return;
+}
+
   const copyBtn = ev.target.closest('.copy-btn');
   if (copyBtn){
     const val = copyBtn.getAttribute('data-val') || '';
@@ -1271,6 +1339,32 @@ btnAutosize.addEventListener('click', autosizeColumns);
   restoreColumnWidths();
   enableResizableColumns();
 })();
+
+btnExportJson.addEventListener('click', async ()=>{
+  try{
+    setBusy(true);
+    if (!allRows.length){ await loadFirstPage(false); }
+    let rows = applyTopFilters(allRows);
+    rows = applyTableFilters(rows);
+    rows = sortRows(rows);
+    await exportJsonFromRows(rows);      // ⇦ нова функція нижче
+  }catch(e){ handleFirestoreError(e); }
+  finally{ setBusy(false); }
+});
+
+btnExportJsonAll.addEventListener('click', async ()=>{
+  try{
+    setBusy(true);
+    if (!allRows.length){ await loadFirstPage(false); }
+    while(_hasMore){ await loadNextPage(); }
+    let rows = applyTopFilters(allRows);
+    rows = applyTableFilters(rows);
+    rows = sortRows(rows);
+    await exportJsonFromRows(rows);
+  }catch(e){ handleFirestoreError(e); }
+  finally{ setBusy(false); }
+});
+
 </script>
 </body>
 </html>
